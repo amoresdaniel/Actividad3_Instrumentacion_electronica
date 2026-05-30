@@ -23,3 +23,8 @@ A continuación se detalla el listado de componentes:
 ESQUEMÁTICO
 
 ![Esquema del Circuito del Ascensor](EsquematicoDiseno.PNG)
+
+
+GIF DE SIMULACION
+
+![Simulación del Circuito del Ascensor](GIFSimulacion.mp4)
