@@ -27,5 +27,4 @@ ESQUEMÁTICO
 
 GIF DE SIMULACION
 
-![Simulación del Circuito del Ascensor](GIFSimulacion.gif)
-)
+<video src="GIFSimulacion.mp4" controls="controls" width="100%"></video>
