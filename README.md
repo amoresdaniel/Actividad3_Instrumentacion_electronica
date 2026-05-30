@@ -22,4 +22,4 @@ A continuación se detalla el listado de componentes:
 
 ESQUEMÁTICO
 
-![Esquema del Circuito del Ascensor](EsquematicoDiseno.png)
+![Esquema del Circuito del Ascensor](EsquematicoDiseno.PNG)
