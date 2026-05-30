@@ -27,4 +27,4 @@ ESQUEMÁTICO
 
 GIF DE SIMULACION
 
-<video src="GIFSimulacion.mp4" controls="controls" width="100%"></video>
+![GIF del Ascensor en Wokwi](GIFSimulacion.gif)
