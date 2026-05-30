@@ -18,5 +18,5 @@ A continuación se detalla el listado de componentes:
 | **D2** | LED 5mm (Azul) | Generico T-1 3/4 | Diotronic | 0.50 € |
 | **R1, R2** | Resistencia 220Ω | CFR-25JT-52-220R | Mouser Electronics | 0.25 € |
 | **-** | Mando Infrarrojo | NEC Protocol IR Remote | AliExpress | 2.00 € |
-| | | | **TOTAL APROX:** | **~ 53.75 €** |
+| | | | **TOTAL APROX:** | 53.75 € |
 
