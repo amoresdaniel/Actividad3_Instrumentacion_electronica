@@ -20,3 +20,6 @@ A continuación se detalla el listado de componentes:
 | **-** | Mando Infrarrojo | NEC Protocol IR Remote | AliExpress | 2.00 € |
 | | | | **TOTAL APROX:** | 53.75 € |
 
+ESQUEMÁTICO
+
+![Esquema del Circuito del Ascensor](EsquematicoDiseno.png)
