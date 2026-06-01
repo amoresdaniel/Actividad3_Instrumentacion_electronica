@@ -1,0 +1,273 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <DHT.h>
+#include <Servo.h>
+#include <IRremote.h>
+#include <EEPROM.h> 
+#include <Fuzzy.h>
+
+//Definición de pines
+#define PIR_PIN 2
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define PIN_CALENTAR 5
+#define SERVO_VENTILADOR_PIN 6 
+#define PIN_ENFRIAR_LED 7      
+#define SERVO_PIN 9            
+#define IR_RECEIVE_PIN 11
+
+//Inicializamos componentes
+DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo ascensorServo;
+Servo ventiladorServo; 
+
+//Reservamos espacio para futuras invocaciones
+Fuzzy *fuzzy = new Fuzzy();
+
+//Variables del ascensor
+int PlantaActual = 1;
+int PlantaDestino = 1;
+int AngulosPlanta[5] = {0, 45, 90, 135, 180}; 
+
+//Variables de presencia
+volatile bool PresenciaDetectada = false;
+unsigned long TiempoUltimaPresencia = 0;
+
+//Variables para la temperatura y memoria
+float TempDeseada; 
+float Margen = 2.0; 
+int Memoria = 0; 
+
+//Variables para el temporizador principal
+unsigned long TiempoAnterior = 0;
+const long Intervalo = 500; 
+
+// Variables de estado para evitar parpadeos
+int ultimaPlanta = -1;
+float ultimaTemp = -100.0;
+String ultimoClima = "";
+String ultimaPresencia = "";
+
+//Variables para el barrido continuo del ventilador
+int velocidadVentiladorActual = 0; 
+int anguloVentilador = 0;          
+int direccionVentilador = 1;       
+unsigned long tiempoAnteriorServo = 0;
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Lectura de EEPROM
+  EEPROM.get(Memoria, TempDeseada);
+  Serial.print("--- DIAGNOSTICO EEPROM: Temp deseada = "); Serial.println(TempDeseada);
+  
+  if (isnan(TempDeseada) || TempDeseada < 10.0 || TempDeseada > 40.0) {
+    TempDeseada = 25.0;
+    EEPROM.put(Memoria, TempDeseada);
+  }
+  
+  
+  FuzzyInput *errorTemp = new FuzzyInput(1);
+  
+  FuzzySet *errorPoco = new FuzzySet(1.5, 2.0, 4.0, 6.0);//Trapecio 1.     
+  errorTemp->addFuzzySet(errorPoco);
+  FuzzySet *errorMedio = new FuzzySet(4.0, 6.0, 8.0, 10.0);//Trapecio 2.    
+  errorTemp->addFuzzySet(errorMedio);
+  FuzzySet *errorMucho = new FuzzySet(8.0, 10.0, 100.0, 100.0);//Trapecio 3. Cubre hasta 100ºC de error
+  errorTemp->addFuzzySet(errorMucho);
+  
+  fuzzy->addFuzzyInput(errorTemp);//Guarada los trapecios generados
+
+  FuzzyOutput *velocidadVentilador = new FuzzyOutput(1);
+  
+  FuzzySet *velLenta = new FuzzySet(0, 0, 80, 120);     
+  velocidadVentilador->addFuzzySet(velLenta);
+  FuzzySet *velMedia = new FuzzySet(80, 120, 180, 220); 
+  velocidadVentilador->addFuzzySet(velMedia);
+  FuzzySet *velRapida = new FuzzySet(180, 220, 255, 255);
+  velocidadVentilador->addFuzzySet(velRapida);
+  
+  fuzzy->addFuzzyOutput(velocidadVentilador);//Carga las salidas generadas
+
+  //Creación de las reglas para configurar la relación entre las entradas guardasdas y las salidas
+  FuzzyRuleAntecedent *ifErrorPoco = new FuzzyRuleAntecedent();
+  ifErrorPoco->joinSingle(errorPoco);
+  FuzzyRuleConsequent *thenVelLenta = new FuzzyRuleConsequent();
+  thenVelLenta->addOutput(velLenta);
+  FuzzyRule *fuzzyRule1 = new FuzzyRule(1, ifErrorPoco, thenVelLenta);
+  fuzzy->addFuzzyRule(fuzzyRule1);
+
+  FuzzyRuleAntecedent *ifErrorMedio = new FuzzyRuleAntecedent();
+  ifErrorMedio->joinSingle(errorMedio);
+  FuzzyRuleConsequent *thenVelMedia = new FuzzyRuleConsequent();
+  thenVelMedia->addOutput(velMedia);
+  FuzzyRule *fuzzyRule2 = new FuzzyRule(2, ifErrorMedio, thenVelMedia);
+  fuzzy->addFuzzyRule(fuzzyRule2);
+
+  FuzzyRuleAntecedent *ifErrorMucho = new FuzzyRuleAntecedent();
+  ifErrorMucho->joinSingle(errorMucho);
+  FuzzyRuleConsequent *thenVelRapida = new FuzzyRuleConsequent();
+  thenVelRapida->addOutput(velRapida);
+  FuzzyRule *fuzzyRule3 = new FuzzyRule(3, ifErrorMucho, thenVelRapida);
+  fuzzy->addFuzzyRule(fuzzyRule3);
+  
+  //Inicialización de componentes
+  dht.begin();
+  lcd.init();
+  lcd.backlight();
+  
+  ascensorServo.attach(SERVO_PIN);
+  ascensorServo.write(AngulosPlanta[0]);
+  
+  ventiladorServo.attach(SERVO_VENTILADOR_PIN);
+  ventiladorServo.write(0); 
+  
+  IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK);
+  
+  pinMode(PIN_CALENTAR, OUTPUT);
+  pinMode(PIN_ENFRIAR_LED, OUTPUT);
+  pinMode(PIR_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIR_PIN), isr_Presencia, RISING);
+  
+  lcd.setCursor(0, 0);
+  lcd.print("Ascensor ACME");
+  delay(2000); 
+  lcd.clear();
+}
+
+void loop() {
+  if (IrReceiver.decode()) {
+    int comando = IrReceiver.decodedIRData.command;
+    switch (comando) {
+      case 48: PlantaDestino = 1; break; 
+      case 24: PlantaDestino = 2; break; 
+      case 122: PlantaDestino = 3; break; 
+      case 16: PlantaDestino = 4; break; 
+      case 56: PlantaDestino = 5; break; 
+      case 2: // Subir Tempreatura deseada
+        TempDeseada += 1.0;
+        EEPROM.put(Memoria, TempDeseada); 
+        Serial.print("Nueva Tempreatura deseada: "); Serial.println(TempDeseada);
+        break;
+      case 152: // Bajar Tempreatura deseada
+        TempDeseada -= 1.0;
+        EEPROM.put(Memoria, TempDeseada); 
+        Serial.print("Nueva Tempreatura deseada: "); Serial.println(TempDeseada);
+        break;
+    }
+    IrReceiver.resume();
+  }
+
+  //Configuramos el movimiento del ascensor
+  if (PlantaActual != PlantaDestino) {
+    ascensorServo.write(AngulosPlanta[PlantaDestino - 1]);
+    PlantaActual = PlantaDestino;
+  }
+
+  //Leemos el sensor periódicamente
+  unsigned long TiempoActual = millis();
+  
+  if (TiempoActual - TiempoAnterior >= Intervalo) {
+    TiempoAnterior = TiempoActual;
+
+    float Temperatura = dht.readTemperature();
+    float LimMaxControl = TempDeseada + Margen;
+    float LimMinControl = TempDeseada - Margen;
+    String EstadoClima = "OFF";
+    float error = Temperatura - TempDeseada;
+ 
+    if (Temperatura >= LimMaxControl) {
+      digitalWrite(PIN_CALENTAR, LOW); 
+      digitalWrite(PIN_ENFRIAR_LED, HIGH); 
+      
+      fuzzy->setInput(1, error);
+      fuzzy->fuzzify();
+      velocidadVentiladorActual = fuzzy->defuzzify(1); 
+      
+      EstadoClima = "ENFRIANDO";
+    } 
+    else if (Temperatura <= LimMinControl) {
+      velocidadVentiladorActual = 0;       
+      digitalWrite(PIN_ENFRIAR_LED, LOW);  
+      digitalWrite(PIN_CALENTAR, HIGH);    
+      EstadoClima = "CALENTANDO";
+    } 
+    else {
+      digitalWrite(PIN_CALENTAR, LOW);
+      digitalWrite(PIN_ENFRIAR_LED, LOW);
+      velocidadVentiladorActual = 0;       
+      EstadoClima = "OK";
+    }
+
+    //Detecciión de presencia
+    String EstadoPresencia = "NO";
+    if (PresenciaDetectada) {
+      TiempoUltimaPresencia = millis();
+      PresenciaDetectada = false; 
+    }
+    if (millis() - TiempoUltimaPresencia < 5000) {
+      EstadoPresencia = "SI";
+    }
+
+    //Configuración para evitar el parpadeo del LCD
+    if (PlantaActual != ultimaPlanta || Temperatura != ultimaTemp || 
+        EstadoClima != ultimoClima || EstadoPresencia != ultimaPresencia) {
+      actualizarLCD(PlantaActual, Temperatura, EstadoClima, EstadoPresencia);
+      ultimaPlanta = PlantaActual;
+      ultimaTemp = Temperatura;
+      ultimoClima = EstadoClima;
+      ultimaPresencia = EstadoPresencia;
+    }
+
+    //Imprimimos por pantalla
+    Serial.print("Planta:"); Serial.print(PlantaActual);
+    Serial.print(" | Tempreatura deseada: "); Serial.print(TempDeseada);
+    Serial.print(" | Temp:"); Serial.print(Temperatura);
+    Serial.print(" | Clima:"); Serial.print(EstadoClima);
+    if (EstadoClima == "ENFRIANDO") {
+      Serial.print(" | PWM IA: "); Serial.println(velocidadVentiladorActual);
+    } else {
+      Serial.println(); 
+    }
+  }
+
+  if (velocidadVentiladorActual > 0) {
+    int retardoPaso = map(velocidadVentiladorActual, 1, 255, 40, 2);
+    if (millis() - tiempoAnteriorServo >= retardoPaso) {
+      tiempoAnteriorServo = millis();
+      anguloVentilador += direccionVentilador; 
+      
+      if (anguloVentilador >= 180) {
+        anguloVentilador = 180;
+        direccionVentilador = -1; 
+      } else if (anguloVentilador <= 0) {
+        anguloVentilador = 0;
+        direccionVentilador = 1; 
+      }
+      ventiladorServo.write(anguloVentilador);
+    }
+  } else {
+    if (anguloVentilador != 0) {
+      ventiladorServo.write(0);
+      anguloVentilador = 0;
+      direccionVentilador = 1;
+    }
+  }
+}
+
+//Interrupción
+void isr_Presencia() {
+  PresenciaDetectada = true;
+}
+
+//Imprimimos por LCD
+void actualizarLCD(int Planta, float Temp, String Clima, String Presencia) {
+  lcd.setCursor(0, 0);
+  lcd.print("P:"); lcd.print(Planta);
+  lcd.print(" Pres:"); lcd.print(Presencia); lcd.print("   ");
+  lcd.setCursor(0, 1);
+  lcd.print("T:"); lcd.print(Temp, 1);
+  lcd.print(" "); lcd.print(Clima); 
+  lcd.print("        "); 
+}
